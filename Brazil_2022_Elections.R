@@ -1,0 +1,429 @@
+####################################################
+## 2022 Brazil Election Model by @PoliticaConDato ##
+####################################################
+
+## Load packages
+library(lubridate)
+library(reshape2)
+library(scales)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(kableExtra)
+library(png)
+library(cowplot)
+library(magick)
+library(tidyverse)
+library(data.table)
+
+#############       POLL MODEL       ################
+
+## Load polls
+polls <- read.csv("https://raw.githubusercontent.com/PoliticaConDato//Brazil-2022-Elections/main/Polls/Polls.csv")
+
+## Clean data
+polls <- polls[,!names(polls) %in% c("Start.Date","End.Date","Methodology")]
+polls$Date <- mdy(polls$Date)
+polls[is.na(polls)] <- 0
+polls$Decided <- 1 - polls$Undecided
+
+polls <- reshape2::melt(polls, id=c("ID","Date","Pollster","Rating","Sample","Decided","Error"), variable.name = "Candidate")
+polls$value.norm <- polls$value / polls$Decided
+
+## Address multiple scenarios
+polls <- group_by(polls, ID, Date, Pollster, Rating, Sample, Error, Candidate)
+polls <- summarise(polls, 
+                   value = mean(value),
+                   value.norm = mean(value.norm)
+                   
+)
+
+## Weights for model
+polls$rating.weight <- polls$Rating / 10
+polls$error.weight <- 1-polls$Error*3
+
+## Model dataframe
+start.date <- min(polls$Date)
+end.date <- max(polls$Date)
+date.vec <- seq(start.date, end.date, 1)
+cand.vec <- unique(as.character(polls$Candidate))
+
+model.df <- merge(date.vec,cand.vec)
+colnames(model.df) <- c("Date","Candidate")
+
+weighted.values <- function(x) {
+  
+  model.date <- ymd(x[1])
+  reduced.polls <- polls[polls$Candidate == x[2],]
+  
+  reduced.polls$days <- model.date - reduced.polls$Date
+  reduced.polls$date.weight <- ifelse(reduced.polls$days < 0, 0, ifelse(reduced.polls$days > 60, 0, 1.2*(1-reduced.polls$days/60)))
+  reduced.polls <- reduced.polls[rev(order(reduced.polls$Pollster, reduced.polls$Date)),]
+  reduced.polls <- reduced.polls[reduced.polls$date.weight > 0, ]
+  reduced.polls <- reduced.polls[!duplicated(reduced.polls$Pollster),]
+  reduced.polls$weight <- reduced.polls$rating.weight * reduced.polls$error.weight * reduced.polls$date.weight
+  reduced.polls$weighted.value <- reduced.polls$weight*reduced.polls$value 
+  reduced.polls$weighted.value.norm <- reduced.polls$weight*reduced.polls$value.norm 
+  total.weight <- sum(reduced.polls$weight)
+  vote.cols <- reduced.polls[,c("weighted.value","weighted.value.norm")]
+  vote.cols <- colSums(vote.cols)
+  vote.cols <- vote.cols / total.weight
+  return(vote.cols)
+}
+
+model.df <- cbind(model.df,t(apply(model.df, 1, weighted.values)))
+
+## Plot model and polls 
+group.colors <- c(Undecided = "#808285", Bolsonaro = "#282883", Lula = "#e20e28", Gomes = "#f3701b", Others = "#2fbef2")
+
+min.graph.date <- mdy("04/01/2022")
+
+filtered.polls <- polls[polls$Date >= min.graph.date,]
+filtered.model <- model.df[model.df$Date >= min.graph.date,]
+
+
+data.plot <- ggplot(filtered.polls, aes(x=Date, y=value, color=Candidate)) +
+  geom_point() +
+  stat_smooth(aes(fill=Candidate)) +
+  scale_fill_manual(values=group.colors) +
+  scale_color_manual(values=group.colors) + scale_y_continuous(labels = scales::percent) + 
+  theme(legend.position="top", legend.title = element_blank(), legend.box = "horizontal", plot.title = element_text(hjust = 0.5)) + 
+  ggtitle("Polls for 2022 Brazil General Election") +
+  xlab("Date") + 
+  ylab("Vote $") +
+  guides(color = guide_legend(nrow = 1, byrow = TRUE)) + 
+  geom_line(data = filtered.model, aes(x=Date, y=weighted.value, color=Candidate), linetype = "dashed") 
+
+
+my_plot_1 <- ggdraw() +
+  draw_plot(data.plot) +
+  draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/PoliData.png", scale = 0.07, x = 0.475, y = -0.47 ) +
+  draw_text("@PoliticaConDato", size = 12, x = 0.85, y = 0.03)
+
+my_plot_1
+
+png("Brazil_Full_Polls.png", width = 1200, height = 900, res = 120)
+my_plot_1
+dev.off()
+
+## Plot excluding undecided
+
+data.plot <- ggplot(filtered.polls[filtered.polls$Candidate != "Undecided",], aes(x=Date, y=value.norm, color=Candidate)) +
+  geom_point() +
+  stat_smooth(aes(fill=Candidate)) +
+  scale_fill_manual(values=group.colors) +
+  scale_color_manual(values=group.colors) + scale_y_continuous(labels = scales::percent) + 
+  theme(legend.position="top", legend.title = element_blank(), legend.box = "horizontal", plot.title = element_text(hjust = 0.5)) + 
+  ggtitle("Polls for 2022 Brazil General Election") +
+  xlab("Date") + 
+  ylab("Vote $") +
+  guides(color = guide_legend(nrow = 1, byrow = TRUE)) + 
+  geom_line(data = filtered.model[filtered.model$Candidate != "Undecided",], aes(x=Date, y=weighted.value.norm, color=Candidate), linetype = "dashed") 
+
+
+my_plot_2 <- ggdraw() +
+  draw_plot(data.plot) +
+  draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/PoliData.png", scale = 0.07, x = 0.475, y = -0.47 ) +
+  draw_text("@PoliticaConDato", size = 12, x = 0.85, y = 0.03)
+
+my_plot_2
+
+png("Brazil_Polls_Excl_Undecided.png", width = 1200, height = 900, res = 120)
+my_plot_2
+dev.off()
+
+## Polling output model
+poll.model <- model.df[model.df$Date == max(model.df$Date),]
+poll.model <- poll.model[,-c(1,3)]
+colnames(poll.model) <- c("Candidate","Polls")
+
+## Clean environment
+remove(data.plot, filtered.model, filtered.polls, my_plot_1, my_plot_2, start.date, end.date)
+
+#############       TRENDS  MODEL       ################
+
+keywords <- c("Presidente","2022","Propostas")
+candidates <- c("Bolsonaro","Lula","Gomes")
+calibration.weight <- as.data.frame(cbind(candidates,c(1,1,1)))
+colnames(calibration.weight) <- c("Candidate","Calibration")
+calibration.weight$Calibration <- as.numeric(calibration.weight$Calibration)
+
+trend.search <- function(x) {
+  trends <- gtrendsR::gtrends(c(paste0(candidates[1]," ",x), paste0(candidates[2]," ",x), paste0(candidates[3]," ",x)), geo = "BR", time = "today 3-m", onlyInterest = TRUE)
+  trends <- trends$interest_over_time
+  trends <- trends[,c(1,2,3)]
+  trends$hits <- as.numeric(trends$hits)
+  trends$hits[is.na(trends$hits)] <- 0
+  trends[is.na(trends)] <- 0
+  write.csv(trends, paste0("Polls/trends_intent_",x,".csv"))
+  
+  trends$Candidate <- gsub( " .*$", "", trends$keyword )
+  
+  trends.t <- trends %>%
+    dplyr::arrange((date)) %>% 
+    dplyr::group_by(Candidate) %>% 
+    dplyr::mutate(mean.7 = frollmean(hits, 7),
+                  mean.30 = frollmean(hits, 30)) %>% 
+    dplyr::ungroup()
+  
+  trends.t <- merge(trends.t, calibration.weight, by = "Candidate", all.x = TRUE)
+  
+  trends.t[,c("mean.7","mean.30")] <- trends.t[,c("mean.7","mean.30")] * trends.t$Calibration
+  
+  trends.t <- trends.t %>%
+    dplyr::arrange((date)) %>% 
+    dplyr::group_by(date) %>% 
+    dplyr::mutate(total.7 = sum(mean.7),
+                  total.30 = sum(mean.30)) %>% 
+    dplyr::ungroup()
+  
+  trends.t$per.7 <- trends.t$mean.7 / trends.t$total.7
+  trends.t$per.30 <- trends.t$mean.30 / trends.t$total.30
+  
+  trends.t$per.7 <-  trends.t$per.7 * (1 - poll.model$Polls[poll.model$Candidate == "Others"])
+  trends.t$per.30 <-  trends.t$per.30 * (1 - poll.model$Polls[poll.model$Candidate == "Others"])
+  trends.t$avg <- (trends.t$per.7 + trends.t$per.30) / 2 
+  
+  trends <- trends.t[,c("date","Candidate","avg")]
+  
+  return(trends)
+}
+
+trends.1 <- trend.search(keywords[1])
+trends.2 <- trend.search(keywords[2])
+trends.3 <- trend.search(keywords[3])
+
+## Clean up trends
+trends.1 <- na.omit(trends.1)
+trends.2 <- na.omit(trends.2)
+trends.3 <- na.omit(trends.3)
+
+trends <- list(trends.1, trends.2, trends.3)
+trends <- Reduce(function(x, y) merge(x, y, all=TRUE, by = c("date","Candidate")), trends)
+trends$value <- rowMeans(trends[,c(3,4,5)])
+trends <- trends[,-c(3,4,5)]
+
+trends.filtered <- trends[trends$date > mdy("04/15/2022"),]
+
+
+## Plot Google Trends
+data.plot <- ggplot(trends.filtered, aes(x=date, y=value, color=Candidate)) +
+  geom_point() +
+  stat_smooth(aes(fill=Candidate)) +
+  scale_fill_manual(values=group.colors) +
+  scale_color_manual(values=group.colors) + scale_y_continuous(labels = scales::percent) + 
+  theme(legend.position="top", legend.title = element_blank(), legend.box = "horizontal", plot.title = element_text(hjust = 0.5)) + 
+  ggtitle("Google Trends for 2022 Brazil General Election") +
+  xlab("Date") + 
+  ylab("Search Interest %") +
+  guides(color = guide_legend(nrow = 1, byrow = TRUE)) 
+
+
+my_plot_3 <- ggdraw() +
+  draw_plot(data.plot) +
+  draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/PoliData.png", scale = 0.07, x = 0.475, y = -0.47 ) +
+  draw_text("@PoliticaConDato", size = 12, x = 0.85, y = 0.03)
+
+my_plot_3
+
+png("Brazil_Google_Trends.png", width = 1200, height = 900, res = 120)
+my_plot_3
+dev.off()
+
+## Prepare trends model output
+
+trends.model <- trends[trends$date == max(trends$date),]
+trends.model <- trends.model[,-c(1)]
+colnames(trends.model) <- c("Candidate","Trends")
+
+
+## Clear environment
+remove(calibration.weight, data.plot, my_plot_3, trends.1, trends.2, trends.3, trends.filtered, trends.model.1, trends.model.2, trends.model.3, group.colors, keywords, min.graph.date)
+
+
+# test <- read.csv("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/trends_intent_presidente.csv")
+# test <- test[,-1]
+# test$date <- ymd(test$date)
+
+
+
+
+
+
+
+
+#############       ENSEMBLE  MODEL       ################
+
+ensemble.model <- poll.model[poll.model$Candidate != "Undecided",]
+ensemble.model <- merge(ensemble.model, trends.model, by = "Candidate", all.x = TRUE)
+ensemble.model$Trends[ensemble.model$Candidate == "Others"] <- ensemble.model$Polls[ensemble.model$Candidate == "Others"]
+
+ensemble.model$Ensemble <- ensemble.model$Polls*0.75 + ensemble.model$Trends*0.25
+ensemble.model <- ensemble.model[,c(2,4)]
+
+colnames(ensemble.model) <- c("candidato","int_voto")
+ensemble.model$int_voto <- as.numeric(ensemble.model$int_voto)*100
+
+## Create confidence interval 
+
+model.date <- max(polls$Date)
+reduced.polls <- polls
+reduced.polls$days <- model.date - reduced.polls$Date 
+reduced.polls$date.weight <- ifelse(reduced.polls$days < 0, 0, ifelse(reduced.polls$days > 60, 0, 1.2*(1-reduced.polls$days/60)))
+reduced.polls <- reduced.polls[rev(order(reduced.polls$Pollster, reduced.polls$Date)),]
+reduced.polls <- reduced.polls[reduced.polls$date.weight > 0, ]
+reduced.polls <- reduced.polls[!duplicated(reduced.polls$Pollster),]
+reduced.polls$weight <- reduced.polls$rating.weight * reduced.polls$error.weight * reduced.polls$date.weight
+total.weight <- sum(reduced.polls$weight)
+reduced.polls$weight <- reduced.polls$weight / total.weight
+reduced.polls <- reduced.polls[,c("ID","weight")]
+
+new.polls <- merge(polls, reduced.polls, by = "ID")
+new.polls <- new.polls[,c("Sample","value.norm","weight","Candidate")]
+
+candidates <- cand.vec[1:4]
+
+
+for(i in 1:length(candidates)) {
+  
+  poll.loop <- new.polls[new.polls$Candidate == candidates[i],]
+  polls.binom <- apply(poll.loop[poll.loop$Candidate == candidates[i],c(1,2,3)], 1, function(x) rbinom(n = x[3]*1000000, size = x[1], prob = x[2]))
+  output.vec <- as.numeric(unlist(polls.binom[1])) / poll.loop$Sample[1]
+  
+  for(j in 2:nrow(poll.loop)) {
+    output.vec <- c(output.vec,as.numeric(unlist(polls.binom[j])) / poll.loop$Sample[j])
+    
+  }
+  
+  quant <- as.numeric(quantile(output.vec, c(0.05, 0.95)))
+  quant <- quant*100
+  inter <- paste0(round(quant[1],1),"-",round(quant[2],1))
+  
+  ensemble.model$Inter[ensemble.model$Candidate == candidates[i]] <- inter
+  
+}
+
+#############       OUTPUT       ################
+ensemble.model[,c("Polls","Trends","Ensemble")] <- ensemble.model[,c("Polls","Trends","Ensemble")]*100
+ensemble.model <- arrange(ensemble.model, desc(Ensemble))
+
+
+kable(ensemble.model, "html",
+      digits=1,
+      caption = "Brazil 2022 Elections Model (% votes)") %>%
+  kable_styling(full_width = F) %>%
+  footnote(number = c("Modeler: PoliData","Twitter: @PoliticaConDato","Date: 2022-06-17"))
+
+
+##### FUTURE WORK BELOW #########
+
+##### PROBABILISTIC MODEL #####
+
+output.mar <- 2*(output.vec) -1 
+
+# Histogram
+hist(output.mar, prob = TRUE,
+     main = "Histogram with density curve")
+
+
+lines(density(output.mar), col = 4, lwd = 2)
+
+output.mar <- data.frame(output.mar)
+output.dense <- density(output.mar$output.mar)
+output.dense <- cbind(output.dense$x, output.dense$y)
+output.dense <- as.data.frame(output.dense)
+output.dense$group <- ifelse(output.dense$V1 < 0, "Rodolfo", "Petro")
+
+ensemble.margin <- ensemble.model$int_voto[1]/(1-blanco) - ensemble.model$int_voto[2]/(1-blanco) 
+
+group.colors <- c(Petro = "#800080", Rodolfo = "#c8c800")
+
+
+data.hist <- ggplot(output.dense, aes(x=V1, y=V2, fill=group)) +
+  geom_area() +
+  geom_line() +
+  scale_fill_manual(values=group.colors) +
+  
+  theme(legend.position="top", legend.title = element_blank(), legend.box = "horizontal", plot.title = element_text(hjust = 0.5), 
+        axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) + 
+  ggtitle("Distribución de margen 2nda vuelta") +
+  xlab("Margen (Petro % - Rodolfo%)") +
+  scale_x_continuous(labels = scales::percent)   +
+  geom_vline(aes(xintercept = mean(output.mar$output.mar)),col='red', linetype="dashed",size=1) +
+  geom_text(aes(mean(output.mar$output.mar), 2, label=paste0(round(mean(output.mar$output.mar)*100,1),"%"), color = 'Modelo Encuestas', hjust = 1.4, vjust = -20)) + 
+  geom_vline(aes(xintercept = ensemble.margin/100),col='blue', linetype="dashed",size=1) +
+  geom_text(aes(ensemble.margin/100, 2, label=paste0(round(ensemble.margin,1),"%"), color = 'Modelo Ensamble', hjust = -1, vjust = -20))
+
+data.hist
+
+
+my_plot_4 <- ggdraw() +
+  draw_plot(data.hist) +
+  #draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/Petro.png", scale = 0.1, x = -0.315, y = 0.385 ) + 
+  #draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/Rodolfo.png", scale = 0.1, x = -0.315, y = -0.36 ) +
+  draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/PoliData.png", scale = 0.07, x = 0.475, y = -0.47 ) +
+  draw_text("@PoliticaConDato", size = 12, x = 0.85, y = 0.03)
+
+my_plot_4
+
+png("Probabilidad.png", width = 1200, height = 900, res = 120)
+my_plot_4
+dev.off()
+
+
+
+
+
+c50 <- length(which(output.vec<0.5))/length(output.vec)
+
+
+
+#### Probabilistic model trials #####
+
+polls.new <- polls.prob %>% 
+  mutate(margin = Petro - Rodolfo )
+
+
+results <- polls.new %>% 
+  summarize(avg = mean(margin), 
+            sd = sd(margin),
+            se = sd(margin) / sqrt(length(margin))) %>% 
+  mutate(start = avg - 1.96 * se, 
+         end = avg + 1.96 * se) 
+round(results * 100, 1)
+
+
+
+
+B <- 10000
+mu <- 0
+tau <- 0.02 #0.035
+
+petro_win <- replicate(B, {
+  results %>% mutate(sigma = sqrt(se^2 + .025^2), 
+                     B = sigma^2 / (sigma^2 + tau^2),
+                     posterior_mean = B * mu + (1 - B) * avg,
+                     posterior_se = sqrt(1 / (1/sigma^2 + 1/tau^2)),
+                     result = rnorm(length(posterior_mean), 
+                                    posterior_mean, posterior_se),
+                     petro = ifelse( result > 0, 1, 0)) %>%
+    summarise(petro =  sum(petro)) %>%
+    pull(petro)
+})
+
+petro_per <- replicate(B, {
+  results %>% mutate(sigma = sqrt(se^2 + .025^2), 
+                     B = sigma^2 / (sigma^2 + tau^2),
+                     posterior_mean = B * mu + (1 - B) * avg,
+                     posterior_se = sqrt(1 / (1/sigma^2 + 1/tau^2)),
+                     result = rnorm(length(posterior_mean), 
+                                    posterior_mean, posterior_se)) %>%
+    pull(result)
+})
+
+
+
+mean(petro_win)
+hist(petro_per)
+c50.2 <- length(which(petro_per>0))/length(petro_per)
+
