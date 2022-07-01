@@ -15,6 +15,7 @@ library(cowplot)
 library(magick)
 library(tidyverse)
 library(data.table)
+library(ggrepel)
 
 #############       POLL MODEL       ################
 
@@ -259,10 +260,8 @@ ensemble.model <- merge(ensemble.model, trends.model, by = "Candidate", all.x = 
 ensemble.model$Trends[ensemble.model$Candidate == "Others"] <- ensemble.model$Polls[ensemble.model$Candidate == "Others"]
 
 ensemble.model$Ensemble <- ensemble.model$Polls*0.75 + ensemble.model$Trends*0.25
-ensemble.model <- ensemble.model[,c(2,4)]
+#ensemble.model <- ensemble.model[,c(2,4)]
 
-colnames(ensemble.model) <- c("candidato","int_voto")
-ensemble.model$int_voto <- as.numeric(ensemble.model$int_voto)*100
 
 ## Create confidence interval 
 
@@ -301,6 +300,8 @@ for(i in 1:length(candidates)) {
   
   ensemble.model$Inter[ensemble.model$Candidate == candidates[i]] <- inter
   
+  assign(paste("vec", candidates[i], sep = "."), output.vec)
+  
 }
 
 #############       OUTPUT       ################
@@ -315,115 +316,51 @@ kable(ensemble.model, "html",
   footnote(number = c("Modeler: PoliData","Twitter: @PoliticaConDato","Date: 2022-06-17"))
 
 
+
+
 ##### FUTURE WORK BELOW #########
 
 ##### PROBABILISTIC MODEL #####
 
+## Build dataframe
+df <- as.data.frame(cbind(vec.Bolsonaro, vec.Lula, vec.Gomes, vec.Others))
+colnames(df) <- candidates
+df <- reshape2::melt(df, variable.name = "Candidate")
+
+group.colors <- c(Bolsonaro = "#282883", Lula = "#e20e28", Gomes = "#f3701b", Others = "#2fbef2")
+
+## Plot histograms
+ggplot(df, aes(x=value, fill=Candidate)) +
+  geom_histogram( color='#e9ecef', alpha=0.6, position='identity') + 
+  scale_fill_manual(values=group.colors) 
+  
 output.mar <- 2*(output.vec) -1 
 
 # Histogram
-hist(output.mar, prob = TRUE,
-     main = "Histogram with density curve")
+poll.short <- poll.model[1:4,]
 
-
-lines(density(output.mar), col = 4, lwd = 2)
-
-output.mar <- data.frame(output.mar)
-output.dense <- density(output.mar$output.mar)
-output.dense <- cbind(output.dense$x, output.dense$y)
-output.dense <- as.data.frame(output.dense)
-output.dense$group <- ifelse(output.dense$V1 < 0, "Rodolfo", "Petro")
-
-ensemble.margin <- ensemble.model$int_voto[1]/(1-blanco) - ensemble.model$int_voto[2]/(1-blanco) 
-
-group.colors <- c(Petro = "#800080", Rodolfo = "#c8c800")
-
-
-data.hist <- ggplot(output.dense, aes(x=V1, y=V2, fill=group)) +
-  geom_area() +
-  geom_line() +
+data.hist <- df %>%
+  filter(Candidate %in% candidates) %>%
+  ggplot( aes(x=value, fill=Candidate)) +
+  geom_density(alpha=0.6, color=NA) +
   scale_fill_manual(values=group.colors) +
-  
+  ggtitle("Vote distribution") +
   theme(legend.position="top", legend.title = element_blank(), legend.box = "horizontal", plot.title = element_text(hjust = 0.5), 
-        axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) + 
-  ggtitle("Distribución de margen 2nda vuelta") +
-  xlab("Margen (Petro % - Rodolfo%)") +
-  scale_x_continuous(labels = scales::percent)   +
-  geom_vline(aes(xintercept = mean(output.mar$output.mar)),col='red', linetype="dashed",size=1) +
-  geom_text(aes(mean(output.mar$output.mar), 2, label=paste0(round(mean(output.mar$output.mar)*100,1),"%"), color = 'Modelo Encuestas', hjust = 1.4, vjust = -20)) + 
-  geom_vline(aes(xintercept = ensemble.margin/100),col='blue', linetype="dashed",size=1) +
-  geom_text(aes(ensemble.margin/100, 2, label=paste0(round(ensemble.margin,1),"%"), color = 'Modelo Ensamble', hjust = -1, vjust = -20))
-
-data.hist
+        axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+  ylab("") +
+  xlab("% of votes") +
+  scale_x_continuous(labels = scales::percent)  +
+  geom_vline(data = poll.short, aes(xintercept = Polls, colour = Candidate),colour = group.colors, linetype = "dashed") +
+  geom_text_repel(data = poll.short, aes(Polls,30, label = paste0(round(Polls*100,1),"%")), color = group.colors)
 
 
 my_plot_4 <- ggdraw() +
   draw_plot(data.hist) +
-  #draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/Petro.png", scale = 0.1, x = -0.315, y = 0.385 ) + 
-  #draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/Rodolfo.png", scale = 0.1, x = -0.315, y = -0.36 ) +
   draw_image("https://raw.githubusercontent.com/PoliticaConDato/Elecciones-2022/main/data_2nda/PoliData.png", scale = 0.07, x = 0.475, y = -0.47 ) +
   draw_text("@PoliticaConDato", size = 12, x = 0.85, y = 0.03)
 
 my_plot_4
 
-png("Probabilidad.png", width = 1200, height = 900, res = 120)
+png("Probability.png", width = 1200, height = 900, res = 120)
 my_plot_4
 dev.off()
-
-
-
-
-
-c50 <- length(which(output.vec<0.5))/length(output.vec)
-
-
-
-#### Probabilistic model trials #####
-
-polls.new <- polls.prob %>% 
-  mutate(margin = Petro - Rodolfo )
-
-
-results <- polls.new %>% 
-  summarize(avg = mean(margin), 
-            sd = sd(margin),
-            se = sd(margin) / sqrt(length(margin))) %>% 
-  mutate(start = avg - 1.96 * se, 
-         end = avg + 1.96 * se) 
-round(results * 100, 1)
-
-
-
-
-B <- 10000
-mu <- 0
-tau <- 0.02 #0.035
-
-petro_win <- replicate(B, {
-  results %>% mutate(sigma = sqrt(se^2 + .025^2), 
-                     B = sigma^2 / (sigma^2 + tau^2),
-                     posterior_mean = B * mu + (1 - B) * avg,
-                     posterior_se = sqrt(1 / (1/sigma^2 + 1/tau^2)),
-                     result = rnorm(length(posterior_mean), 
-                                    posterior_mean, posterior_se),
-                     petro = ifelse( result > 0, 1, 0)) %>%
-    summarise(petro =  sum(petro)) %>%
-    pull(petro)
-})
-
-petro_per <- replicate(B, {
-  results %>% mutate(sigma = sqrt(se^2 + .025^2), 
-                     B = sigma^2 / (sigma^2 + tau^2),
-                     posterior_mean = B * mu + (1 - B) * avg,
-                     posterior_se = sqrt(1 / (1/sigma^2 + 1/tau^2)),
-                     result = rnorm(length(posterior_mean), 
-                                    posterior_mean, posterior_se)) %>%
-    pull(result)
-})
-
-
-
-mean(petro_win)
-hist(petro_per)
-c50.2 <- length(which(petro_per>0))/length(petro_per)
-
