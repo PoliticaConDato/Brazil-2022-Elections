@@ -313,7 +313,7 @@ kable(ensemble.model, "html",
       digits=1,
       caption = "Brazil 2022 Elections Model (% votes)") %>%
   kable_styling(full_width = F) %>%
-  footnote(number = c("Modeler: PoliData","Twitter: @PoliticaConDato","Date: 2022-06-17"))
+  footnote(number = c("Modeler: PoliData","Twitter: @PoliticaConDato","Date: 2022-09-29"))
 
 
 
